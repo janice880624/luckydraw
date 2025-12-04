@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>幸運抽獎系統</title>
+    <!-- 引入 Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Noto Sans TC', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        /* 自定義動畫，用於抽獎時閃爍效果 */
+        @keyframes pulse-fast {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .animate-pulse-fast {
+            animation: pulse-fast 0.1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans min-h-screen">
+
+    <div id="app" class="max-w-4xl mx-auto p-4 sm:p-8">
+
+        <!-- Header -->
+        <header class="mb-6">
+            <h1 class="text-3xl font-extrabold text-indigo-900 flex items-center">
+                🏆 幸運抽獎系統 
+            </h1>
+            <div id="statusMessage" class="mt-3 p-3 text-sm rounded-lg hidden"></div>
+        </header>
+
+        <!-- Tab Navigation -->
+        <div class="flex border-b border-gray-200 mb-6" id="tabNavigation">
+            <button data-tab="draw" class="tab-button active-tab">抽獎</button>
+            <button data-tab="setup" class="tab-button">設定</button>
+            <button data-tab="results" class="tab-button">結果</button>
+        </div>
+
+        <!-- Tab Content Containers -->
+        <div id="draw-panel" class="tab-content"></div>
+        <div id="setup-panel" class="tab-content hidden"></div>
+        <div id="results-panel" class="tab-content hidden"></div>
+
+        <!-- Footer -->
+        <footer class="mt-8 pt-4 border-t text-xs text-gray-400 text-center">
+            <p>Copyright © 2025 Janice. All rights reserved.</p>
+        </footer>
+    </div>
+
+    <script>
+        // --- Global State & Constants ---
+        const STORAGE_KEY = 'luckyDrawAppState';
+        let appState = {
+            participants: [],
+            prizes: [],
+            results: [],
+            isDrawing: false,
+            currentWinner: null,
+            shufflingName: '',
+            selectedPrizeId: null // 新增：用於追蹤當前選取的獎項 ID
+        };
+        let shuffleInterval;
+
+        // --- Utility Functions ---
+
+        /**
+         * 載入 Local Storage 數據
+         */
+        const loadState = () => {
+            try {
+                const storedState = localStorage.getItem(STORAGE_KEY);
+                if (storedState) {
+                    const loadedState = JSON.parse(storedState);
+                    appState.participants = loadedState.participants || [];
+                    appState.prizes = loadedState.prizes || [];
+                    appState.results = loadedState.results || [];
+                    // 嘗試載入選取的獎項ID，如果沒有則會保持 null
+                    appState.selectedPrizeId = loadedState.selectedPrizeId || null;
+                }
+            } catch (e) {
+                console.error("Error loading state from localStorage:", e);
+                showStatusMessage("錯誤：無法從本地儲存空間載入資料。", 'error');
+            }
+        };
+
+        const saveState = () => {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                    participants: appState.participants,
+                    prizes: appState.prizes,
+                    results: appState.results,
+                    selectedPrizeId: appState.selectedPrizeId // 儲存選取的獎項 ID
+                }));
+                showStatusMessage("資料已儲存於 Local Storage。", 'success');
+            } catch (e) {
+                console.error("Error saving state to localStorage:", e);
+                showStatusMessage("錯誤：無法將資料儲存到本地儲存空間。", 'error');
+            }
+        };
+
+        /**
+         * 顯示應用程式狀態訊息
+         * @param {string} message - 顯示的訊息
+         * @param {'success'|'error'|'info'} type - 訊息類型
+         */
+        const showStatusMessage = (message, type = 'info') => {
+            const el = document.getElementById('statusMessage');
+            if (!el) return;
+
+            el.textContent = message;
+            el.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-blue-100', 'text-blue-700', 'bg-green-100', 'text-green-700');
+
+            if (type === 'error') {
+                el.classList.add('bg-red-100', 'text-red-700');
+            } else if (type === 'success') {
+                el.classList.add('bg-green-100', 'text-green-700');
+            } else {
+                 el.classList.add('bg-blue-100', 'text-blue-700');
+            }
+
+            setTimeout(() => {
+                el.classList.add('hidden');
+            }, 5000);
+        };
+
+        const generateId = () => Math.random().toString(36).substring(2, 9);
+
+
+        // --- Drawing Logic Helpers ---
+
+        const getAvailableParticipants = () => {
+            return appState.participants.filter(p => p.available);
+        };
+
+        // --- Setup Logic ---
+
+        const parseParticipants = (input) => {
+            const lines = input.trim().split('\n').filter(line => line.trim() !== '');
+            return lines.map(line => {
+                const parts = line.trim().split(/\s+/);
+                
+                if (parts.length < 2) {
+                    const name = parts[0] || '';
+                    const id = generateId();
+                    return { id, name, available: true };
+                }
+                
+                const id = parts[0];
+                const name = parts.slice(1).join(' '); 
+                
+                return { id, name, available: true };
+            });
+        };
+
+        const parsePrizes = (input) => {
+            const lines = input.trim().split('\n').filter(line => line.trim() !== '');
+            return lines.map(line => {
+
+                const parts = line.trim().split(/\s+/);
+                
+                if (parts.length < 2) {
+
+                    return { id: generateId(), name: parts[0] || '無名稱獎項', quantity: 1, drawn: 0 };
+                }
+
+                // 假設格式為: [獎項名稱] [數量]
+                const quantityStr = parts[parts.length - 1];
+                const quantity = parseInt(quantityStr, 10);
+                
+                const name = parts.slice(0, parts.length - 1).join(' ');
+                
+                return { id: generateId(), name, quantity: isNaN(quantity) ? 1 : quantity, drawn: 0 };
+            });
+        };
+
+        const handleSaveSetup = () => {
+            const participantInput = document.getElementById('participantInput').value;
+            const prizeInput = document.getElementById('prizeInput').value;
+
+            const newParticipants = parseParticipants(participantInput);
+            const newPrizes = parsePrizes(prizeInput);
+
+            if (newParticipants.length === 0) {
+                showStatusMessage("請輸入有效的參與者資料。", 'error');
+                return;
+            }
+            if (newPrizes.length === 0) {
+                showStatusMessage("請輸入有效的獎項資料。", 'error');
+                return;
+            }
+
+
+            appState.participants = newParticipants;
+            appState.prizes = newPrizes;
+            appState.results = []; // 載入新資料時清空結果
+
+            // 載入新獎項後，預選第一個可抽的獎項
+            const firstAvailablePrize = newPrizes.find(p => p.drawn < p.quantity);
+            appState.selectedPrizeId = firstAvailablePrize ? firstAvailablePrize.id : null;
+
+            saveState();
+            showStatusMessage(`已載入 ${newParticipants.length} 位參與者和 ${newPrizes.length} 個獎項。`, 'success');
+
+            // 重新渲染 Draw 和 Results 面板
+            renderDrawPanel();
+            renderResultsPanel();
+        };
+
+        const handleResetApp = () => {
+            if (window.confirm("確定要重設所有資料嗎？這將清空參與者、獎項和結果。")) {
+                appState.participants = [];
+                appState.prizes = [];
+                appState.results = [];
+                appState.selectedPrizeId = null; // 清空選取的獎項
+                localStorage.removeItem(STORAGE_KEY);
+                document.getElementById('participantInput').value = '';
+                document.getElementById('prizeInput').value = '';
+                showStatusMessage("應用程式資料已完全重設。", 'info');
+                renderDrawPanel();
+                renderResultsPanel();
+                document.getElementById('tabNavigation').querySelector('[data-tab="setup"]').click();
+            }
+        };
+
+
+        // --- Drawing Control ---
+
+        /**
+         * 處理獎項選取
+         * @param {string} prizeId - 被選取的獎項 ID
+         */
+        const handlePrizeSelect = (prizeId) => {
+            const prize = appState.prizes.find(p => p.id === prizeId);
+            if (prize && prize.drawn < prize.quantity) {
+                appState.selectedPrizeId = prizeId;
+                renderDrawPanel(); // 重新渲染 Draw Panel 以更新顯示
+                showStatusMessage(`已選取獎項：${prize.name}`, 'info');
+            } else {
+                showStatusMessage("該獎項已抽完或不存在，無法選取。", 'error');
+            }
+        };
+
+
+        const startDraw = () => {
+            if (appState.isDrawing) return;
+
+            // 使用選取的獎項
+            const prize = appState.prizes.find(p => p.id === appState.selectedPrizeId); 
+            const availableParticipants = getAvailableParticipants();
+
+            if (!prize) {
+                showStatusMessage("請先選取一個有效的獎項！", 'error');
+                return;
+            }
+            if (prize.drawn >= prize.quantity) {
+                showStatusMessage("該獎項已抽完！請選取其他獎項。", 'error');
+                return;
+            }
+            if (availableParticipants.length === 0) {
+                showStatusMessage("沒有可抽的參與者了！", 'info');
+                return;
+            }
+
+            appState.isDrawing = true;
+            appState.currentWinner = null;
+            showStatusMessage(`正在為【${prize.name}】進行抽獎...`, 'info');
+            renderDrawPanel(); // 立即更新 UI 顯示抽獎中
+
+            // Animation loop
+            const names = availableParticipants.map(p => p.name);
+            shuffleInterval = setInterval(() => {
+                const randomIndex = Math.floor(Math.random() * names.length);
+                appState.shufflingName = names[randomIndex];
+                // 只更新動畫顯示區
+                const animEl = document.getElementById('animationDisplay');
+                if (animEl) {
+                    animEl.innerHTML = `<p class="text-5xl font-extrabold text-yellow-400 animate-pulse-fast">${appState.shufflingName || '...'}</p>`;
+                }
+            }, 100);
+
+            // Stop and determine winner after a delay
+            setTimeout(() => {
+                clearInterval(shuffleInterval);
+
+                const winnerIndex = Math.floor(Math.random() * availableParticipants.length);
+                const winner = availableParticipants[winnerIndex];
+
+                if (!winner) {
+                    appState.isDrawing = false;
+                    appState.shufflingName = '';
+                    showStatusMessage("抽獎失敗，請再試一次。", 'error');
+                    renderDrawPanel();
+                    return;
+                }
+
+                // 1. Update Participants (mark as unavailable)
+                appState.participants = appState.participants.map(p =>
+                    p.id === winner.id ? { ...p, available: false } : p
+                );
+
+                // 2. Update Prizes (increment drawn count)
+                appState.prizes = appState.prizes.map(p =>
+                    p.id === prize.id ? { ...p, drawn: p.drawn + 1 } : p
+                );
+
+                // 3. Update Results (add new result)
+                const newResult = {
+                    id: generateId(),
+                    prizeName: prize.name,
+                    winnerName: winner.name,
+                    winnerId: winner.id,
+                    timestamp: new Date().toISOString(),
+                };
+                appState.results.unshift(newResult); // 放到最前面
+
+                appState.currentWinner = winner;
+                appState.shufflingName = winner.name;
+                appState.isDrawing = false;
+
+                // 檢查該獎項是否已抽完，抽完則取消選取
+                const updatedPrize = appState.prizes.find(p => p.id === prize.id);
+                if (updatedPrize && updatedPrize.drawn >= updatedPrize.quantity) {
+                    appState.selectedPrizeId = null; 
+                }
+
+                saveState(); // Save results
+                showStatusMessage(`恭喜！【${prize.name}】得獎者是 ${winner.name}！`, 'success');
+                renderDrawPanel();
+                renderResultsPanel(); // Update results list
+            }, 3000); // 3 second drawing time
+        };
+
+
+        // --- Export Logic ---
+
+        /**
+         * 匯出抽獎結果為 CSV 檔案
+         */
+        const exportResultsToCSV = () => {
+            if (appState.results.length === 0) {
+                showStatusMessage("沒有抽獎結果可供匯出。", 'info');
+                return;
+            }
+
+            // 1. 定義 CSV 標題
+            const headers = ["編號", "姓名", "獎項", "時間"];
+            let csv = headers.join(',') + '\n';
+
+            // 2. 格式化結果數據
+            appState.results.forEach(r => {
+                const timestamp = new Date(r.timestamp).toLocaleString('zh-TW');
+                
+                // 如果內容包含逗號或引號，需要用雙引號包裹並逸出內部雙引號
+                const escapeCSV = (data) => `"${data.replace(/"/g, '""')}"`;
+                
+                const row = [
+                    r.winnerId, 
+                    escapeCSV(r.winnerName),
+                    escapeCSV(r.prizeName),
+                    escapeCSV(timestamp)
+                ].join(',');
+                csv += row + '\n';
+            });
+
+            // 3. 創建 Blob 和下載連結
+            // 使用 UTF-8 BOM 確保中文在 Excel 中正確顯示
+            const bom = '\ufeff'; 
+            const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', '幸運抽獎結果.csv');
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            showStatusMessage("抽獎結果已匯出為 CSV 檔案。", 'success');
+        };
+
+        /**
+         * 匯出未中獎參與者名單為 CSV 檔案 (新增)
+         */
+        const exportAvailableParticipantsToCSV = () => {
+            const availableParticipants = getAvailableParticipants();
+
+            if (availableParticipants.length === 0) {
+                showStatusMessage("沒有未中獎參與者可供匯出。", 'info');
+                return;
+            }
+
+            // 1. 定義 CSV 標題
+            const headers = ["編號", "姓名"];
+            let csv = headers.join(',') + '\n';
+
+            // 2. 格式化結果數據
+            availableParticipants.forEach(p => {
+                // 如果內容包含逗號或引號，需要用雙引號包裹並逸出內部雙引號
+                const escapeCSV = (data) => `"${data.replace(/"/g, '""')}"`;
+                
+                const row = [
+                    p.id, 
+                    escapeCSV(p.name)
+                ].join(',');
+                csv += row + '\n';
+            });
+
+            // 3. 創建 Blob 和下載連結
+            const bom = '\ufeff'; 
+            const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', '未中獎參與者.csv');
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            showStatusMessage("未中獎參與者名單已匯出為 CSV 檔案。", 'success');
+        };
+
+
+        // --- Rendering Functions (UI Components) ---
+
+        /**
+         * 渲染 Card 容器
+         */
+        const renderCard = (title, contentHTML, icon = '✨', className = '') => `
+            <div class="bg-white shadow-xl rounded-xl p-6 ${className}">
+                <h2 class="text-2xl font-bold mb-4 text-indigo-700 flex items-center">
+                    <span class="text-3xl mr-2">${icon}</span>
+                    ${title}
+                </h2>
+                ${contentHTML}
+            </div>
+        `;
+
+        /**
+         * 渲染獎項清單 (可點擊選取)
+         */
+        const renderPrizeList = () => {
+            if (appState.prizes.length === 0) {
+                return '<p class="text-gray-500">請先在設定頁面載入獎項。</p>';
+            }
+            return `
+                <div class="space-y-2 max-h-48 overflow-y-auto">
+                    ${appState.prizes.map(p => {
+                        const isSelected = p.id === appState.selectedPrizeId;
+                        const isAvailable = p.drawn < p.quantity;
+                        const bgColor = isSelected ? 'bg-indigo-200' : 'bg-indigo-50/50 hover:bg-indigo-100';
+                        const cursorStyle = isAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-70';
+                        const clickHandler = isAvailable ? `onclick="handlePrizeSelect('${p.id}')"` : '';
+
+                        return `
+                            <div ${clickHandler} class="flex justify-between items-center p-3 ${bgColor} rounded-lg transition duration-200 ${cursorStyle}">
+                                <span class="font-semibold text-gray-700">${p.name} ${isSelected ? '(已選取)' : ''}</span>
+                                <span class="px-3 py-1 text-sm font-medium rounded-full ${isAvailable ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                                    已抽/總數: ${p.drawn} / ${p.quantity}
+                                </span>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        };
+
+        /**
+         * 渲染 Draw Panel
+         */
+        const renderDrawPanel = () => {
+            // 找到當前選取的獎項
+            const currentSelectedPrize = appState.prizes.find(p => p.id === appState.selectedPrizeId);
+
+            // 判斷抽獎按鈕是否應禁用
+            const isDrawDisabled = appState.isDrawing || 
+                                   !currentSelectedPrize || 
+                                   currentSelectedPrize.drawn >= currentSelectedPrize.quantity || 
+                                   getAvailableParticipants().length === 0;
+
+            const availableParticipantsCount = getAvailableParticipants().length;
+            const totalParticipantsCount = appState.participants.length;
+            const latestResult = appState.results[0];
+
+            // --- 抽獎控制台 (Card 1) ---
+            const controlPanelHTML = `
+                <div class="grid md:grid-cols-2 gap-6">
+                    <div class="flex flex-col space-y-4">
+                        <h3 class="text-xl font-semibold text-gray-800">當前選取獎項</h3>
+                        ${currentSelectedPrize ? `
+                            <div class="p-4 bg-indigo-50 border-l-4 border-indigo-500 rounded-lg">
+                                <p class="text-lg font-bold text-indigo-700">【${currentSelectedPrize.name}】</p>
+                                <p class="text-sm text-gray-600">剩餘數量：${currentSelectedPrize.quantity - currentSelectedPrize.drawn}</p>
+                            </div>
+                        ` : `
+                            <div class="p-4 bg-yellow-50 border-l-4 border-yellow-500 rounded-lg">
+                                <p class="text-lg font-bold text-yellow-700">請先在右側清單選取一個可抽獎項</p>
+                            </div>
+                        `}
+                        <button
+                            onclick="startDraw()"
+                            ${isDrawDisabled ? 'disabled' : ''}
+                            class="w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                        >
+                            ${appState.isDrawing ? `
+                                <svg class="w-5 h-5 mr-2 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004 12a7.96 7.96 0 003.58 6.58L4 16v5h5.582M20 20l-3.58-3.58A7.96 7.96 0 0020 12a7.96 7.96 0 00-3.58-6.58L20 8V4h-5.582"></path></svg>
+                                抽獎中...
+                            ` : `
+                                🏆 開始抽獎
+                            `}
+                        </button>
+                    </div>
+
+                    <div class="flex flex-col space-y-4">
+                        <h3 class="text-xl font-semibold text-gray-800">獎項清單</h3>
+                        ${renderPrizeList()}
+                        <div class="text-sm text-gray-500">
+                            👥 剩餘可抽人數: ${availableParticipantsCount} / ${totalParticipantsCount}
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // --- 動畫顯示 (Card 2) ---
+            let animationContent;
+            if (appState.isDrawing) {
+                animationContent = `
+                    <p class="text-5xl font-extrabold text-yellow-400 animate-pulse-fast">
+                        ${appState.shufflingName || '...'}
+                    </p>
+                `;
+            } else if (appState.currentWinner) {
+                animationContent = `
+                    <div class="space-y-2">
+                        <span class="text-6xl mx-auto block">🎉</span>
+                        <p class="text-xl text-green-400 font-semibold">恭喜得獎！</p>
+                        <p class="text-6xl font-extrabold text-yellow-300">
+                            ${appState.currentWinner.name}
+                        </p>
+                        <p class="text-2xl font-medium text-indigo-200">獲得：${latestResult?.prizeName || '未知獎項'}</p>
+                    </div>
+                `;
+            } else {
+                animationContent = `
+                    <p class="text-2xl font-light text-indigo-300">點擊「開始抽獎」來抽出得獎者</p>
+                `;
+            }
+
+            const animationCardHTML = renderCard(
+                '抽獎結果',
+                `<div id="animationDisplay" class="h-48 flex items-center justify-center">${animationContent}</div>`,
+                '✨',
+                'text-center bg-indigo-800 text-white'
+            );
+
+
+            document.getElementById('draw-panel').innerHTML = `
+                <div class="space-y-6">
+                    ${renderCard('抽獎控制台', controlPanelHTML, '⚙️')}
+                    ${animationCardHTML}
+                </div>
+            `;
+        };
+
+        /**
+         * 渲染 Setup Panel
+         */
+        const renderSetupPanel = () => {
+            const setupPanelEl = document.getElementById('setup-panel');
+            // Helper function to format participant data for textarea display
+            const formatParticipantsForDisplay = (participants) => {
+                // Ensure the displayed format matches the input format (ID SPACE Name)
+                return participants.map(p => `${p.id} ${p.name}`).join('\n');
+            };
+
+            // Helper function to format prize data for textarea display
+            const formatPrizesForDisplay = (prizes) => {
+                // Ensure the displayed format matches the input format (Name SPACE Quantity)
+                return prizes.map(p => `${p.name} ${p.quantity}`).join('\n');
+            };
+
+            setupPanelEl.innerHTML = `
+                <div class="space-y-6">
+                    ${renderCard('參與者資料', `
+                        <p class="text-sm text-gray-600 mb-3">請貼上您從 Google Sheet 複製的「編號 姓名」資料，中間以空格分隔，每行一筆。</p>
+                        <textarea
+                            id="participantInput"
+                            placeholder="例如：\\n1 張三\\n2 李四\\n3 王五"
+                            rows="6"
+                            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm font-mono"
+                        >${formatParticipantsForDisplay(appState.participants)}</textarea>
+                        <p class="mt-2 text-sm text-gray-500">已載入人數：${appState.participants.length} 人</p>
+                    `, '👤')}
+
+                    ${renderCard('獎項與數量', `
+        
+                        <p class="text-sm text-gray-600 mb-3">請貼上您從 Google Sheet 複製的「獎項名稱 數量」資料，每行一筆。</p>
+                        <textarea
+                            id="prizeInput"
+                            placeholder="例如：\\n一等獎 1\\n二等獎 5\\n三等獎 10"
+                            rows="4"
+                            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm font-mono"
+                        >${formatPrizesForDisplay(appState.prizes)}</textarea>
+                        <p class="mt-2 text-sm text-gray-500">已設定獎項數：${appState.prizes.length} 個</p>
+                    `, '🎁')}
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <button
+                            onclick="handleSaveSetup()"
+                            class="w-full py-3 px-4 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-300 flex items-center justify-center"
+                        >
+                            💾 儲存並載入資料
+                        </button>
+                        <button
+                            onclick="handleResetApp()"
+                            class="w-full py-3 px-4 bg-red-600 text-white font-semibold rounded-lg shadow-md hover:bg-red-700 transition duration-300 flex items-center justify-center"
+                        >
+                            ❌ 清空所有資料
+                        </button>
+                    </div>
+                </div>
+            `;
+        };
+
+        /**
+         * 渲染 Results Panel
+         */
+        const renderResultsPanel = () => {
+            const availableParticipants = getAvailableParticipants();
+
+            // 抽獎結果紀錄
+            const resultsListHTML = appState.results.length === 0
+                ? '<p class="text-gray-500">尚未有抽獎結果。</p>'
+                : `
+                    <div class="max-h-[500px] overflow-y-auto space-y-2">
+                        ${appState.results.map((r, index) => `
+                            <div class="p-4 rounded-lg shadow-sm flex justify-between items-center ${index === 0 ? 'bg-yellow-50 border-2 border-yellow-500' : 'bg-gray-50'}" style="white-space: nowrap;">
+                                <div class="flex-1 min-w-0 pr-2">
+                                    <p class="font-semibold text-gray-800 truncate">${r.winnerName}</p>
+                                    <p class="text-sm text-gray-500 truncate">編號: ${r.winnerId}</p>
+                                </div>
+                                <div class="ml-4 text-right">
+                                    <p class="text-base font-bold text-indigo-600">${r.prizeName}</p>
+                                    <p class="text-xs text-gray-400">${new Date(r.timestamp).toLocaleString('zh-TW')}</p>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+
+            // 未中獎參與者
+            const availableListHTML = availableParticipants.length === 0
+                ? '<p class="text-gray-500">所有人都已中獎或被抽光！</p>'
+                : `
+                    <div class="flex flex-wrap gap-2">
+                        ${availableParticipants.map(p => `
+                            <span class="text-sm px-3 py-1 bg-blue-100 text-blue-800 rounded-full">
+                                ${p.name} (${p.id})
+                            </span>
+                        `).join('')}
+                    </div>
+                `;
+
+            const resultsPanelEl = document.getElementById('results-panel');
+            resultsPanelEl.innerHTML = `
+                <div class="space-y-6">
+                    ${renderCard('抽獎結果紀錄', `
+                        <button 
+                            onclick="exportResultsToCSV()"
+                            class="w-full mb-4 py-3 px-4 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-300 flex items-center justify-center disabled:opacity-50"
+                        >
+                            📥 匯出中獎名單 CSV 檔案
+                        </button>
+                        ${resultsListHTML}
+                    `, '📜')}
+                    ${renderCard('未中獎參與者', `
+                        <button 
+                            onclick="exportAvailableParticipantsToCSV()"
+                            class="w-full mb-4 py-3 px-4 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-300 flex items-center justify-center disabled:opacity-50"
+                        >
+                            📥 匯出未中獎名單 CSV 檔案
+                        </button>
+                        ${availableListHTML}
+                    `, '👥')}
+                </div>
+            `;
+        };
+
+
+        // --- Tab Control Logic ---
+        const setupTabControl = () => {
+            const tabButtons = document.querySelectorAll('.tab-button');
+            const tabContents = document.querySelectorAll('.tab-content');
+
+            // 初始化樣式
+            tabButtons.forEach(button => {
+                button.classList.add('flex', 'items-center', 'px-4', 'py-2', 'text-sm', 'font-medium', 'rounded-t-lg', 'transition-all', 'duration-200', 'bg-gray-100', 'text-gray-600', 'hover:bg-gray-200');
+            });
+            const activeTabButton = document.querySelector('.tab-button.active-tab');
+            if(activeTabButton) {
+                activeTabButton.classList.remove('bg-gray-100', 'text-gray-600', 'hover:bg-gray-200');
+                activeTabButton.classList.add('bg-white', 'text-indigo-700', 'border-b-4', 'border-indigo-500');
+            }
+
+
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const targetTab = button.dataset.tab;
+
+                    // 隱藏所有內容，重設所有按鈕樣式
+                    tabContents.forEach(content => content.classList.add('hidden'));
+                    tabButtons.forEach(btn => {
+                        btn.classList.remove('bg-white', 'text-indigo-700', 'border-b-4', 'border-indigo-500', 'active-tab');
+                        btn.classList.add('bg-gray-100', 'text-gray-600', 'hover:bg-gray-200');
+                    });
+
+                    // 顯示目標內容，設定目標按鈕樣式
+                    document.getElementById(`${targetTab}-panel`).classList.remove('hidden');
+                    button.classList.remove('bg-gray-100', 'text-gray-600', 'hover:bg-gray-200');
+                    button.classList.add('bg-white', 'text-indigo-700', 'border-b-4', 'border-indigo-500', 'active-tab');
+                });
+            });
+        };
+
+        // --- Application Initialization ---
+        const initializeApp = () => {
+            loadState();
+            renderDrawPanel();
+            renderSetupPanel();
+            renderResultsPanel();
+            setupTabControl();
+        };
+
+        window.onload = initializeApp;
+
+        // 暴露給全局，讓 HTML 中的 onclick 可以呼叫
+        window.handleSaveSetup = handleSaveSetup;
+        window.handleResetApp = handleResetApp;
+        window.startDraw = startDraw;
+        window.handlePrizeSelect = handlePrizeSelect; // 暴露新的選取函式
+        window.exportResultsToCSV = exportResultsToCSV; // 暴露 CSV 匯出函式
+        window.exportAvailableParticipantsToCSV = exportAvailableParticipantsToCSV; // 暴露新的 CSV 匯出函式
+
+    </script>
+</body>
+</html>
